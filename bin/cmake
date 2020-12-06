@@ -1,2 +1,0 @@
-#!/bin/bash
-docker run -it --rm --privileged -w $(pwd) -e IDF_PATH=$IDF_PATH -v /dev/ttyUSB0:/dev/ttyUSB0 -v /etc/passwd:/etc/passwd -v /etc/shadow:/etc/shadow -u 1000 -v $HOME:$HOME esp-idf cmake "$@"
