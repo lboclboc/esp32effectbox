@@ -27,10 +27,4 @@
 			</matcher>
 		</filter>
 	</filteredResources>
-	<variableList>
-		<variable>
-			<name>IDF_PATH</name>
-			<value>file:/home/lasse/git/esp-idf</value>
-		</variable>
-	</variableList>
 </projectDescription>

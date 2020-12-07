@@ -41,14 +41,19 @@ void app_main(void);
 *******************************************************************************/
 void app_main(void)
 {
-    printf("SDK version:%s\n", esp_get_idf_version());
+	static const int i2s_num = 0; // i2s port number
 
-    adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(ADC1_GPIO35_CHANNEL, ADC_ATTEN_DB_0);
-    while(true)
-    {
-        int val = adc1_get_raw(ADC1_GPIO35_CHANNEL);
-        std::cout << "ADC Value: " << val << std::endl;
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
+	static const i2s_config_t i2s_config = {
+	    .mode = I2S_MODE_MASTER | I2S_MODE_TX,
+	    .sample_rate = 44100,
+	    .bits_per_sample = 16,
+	    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+	    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+	    .intr_alloc_flags = 0, // default interrupt priority
+	    .dma_buf_count = 8,
+	    .dma_buf_len = 64,
+	    .use_apll = false
+	};
+
+	i2s_driver_install(I2S_NUM, &i2s_config, 0, NULL);
 }
