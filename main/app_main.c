@@ -13,22 +13,9 @@
 #include "esp_rom_sys.h"
 
 static const char *TAG = "app_main";
-#define CONFIG_IDF_TARGET_ESP32 1
-
-#if CONFIG_IDF_TARGET_ESP32
 
 #define V_REF   1100
 #define ADC1_TEST_CHANNEL (ADC1_CHANNEL_7)
-
-#define PARTITION_NAME   "storage"
-
-/*---------------------------------------------------------------
-                            EXAMPLE CONFIG
----------------------------------------------------------------*/
-//enable record sound and save in flash
-#define RECORD_IN_FLASH_EN        (0)
-//enable replay recorded sound in flash
-#define REPLAY_FROM_FLASH_EN      (0)
 
 //i2s number
 #define I2S_NUM           		  (I2S_NUM_0)
@@ -48,15 +35,6 @@ static const char *TAG = "app_main";
 #define I2S_ADC_UNIT              ADC_UNIT_1
 //I2S built-in ADC channel
 #define I2S_ADC_CHANNEL           ADC1_CHANNEL_0
-
-//flash record size, for recording 5 seconds' data
-#define FLASH_RECORD_SIZE         (I2S_CHANNEL_NUM * I2S_SAMPLE_RATE * I2S_SAMPLE_BITS / 8 * 5)
-#define FLASH_ERASE_SIZE          (FLASH_RECORD_SIZE % FLASH_SECTOR_SIZE == 0) ? FLASH_RECORD_SIZE : FLASH_RECORD_SIZE + (FLASH_SECTOR_SIZE - FLASH_RECORD_SIZE % FLASH_SECTOR_SIZE)
-//sector size of flash
-#define FLASH_SECTOR_SIZE         (0x1000)
-//flash read / write address
-#define FLASH_ADDR                (0x200000)
-
 
 /**
  * @brief I2S ADC mode init.
@@ -95,6 +73,7 @@ void i2s_init(void)
      };
      i2s_set_pin(i2s_num, &pin_config);
 
+#if 0
      ESP_LOGI(TAG, "Setting sample rate");
 
      if (ESP_OK != i2s_set_sample_rates(i2s_num, I2S_SAMPLE_RATE)) {
@@ -103,6 +82,7 @@ void i2s_init(void)
      else {
          ESP_LOGI(TAG, "..ok");
      }
+#endif
 
      //init ADC pad
      i2s_set_adc_mode(I2S_ADC_UNIT, I2S_ADC_CHANNEL);
@@ -113,36 +93,35 @@ void i2s_init(void)
  */
 void i2s_dac_task(void*arg)
 {
-    int i2s_read_len = BUFFER_SIZE;
     size_t bytes_written;
 
-    uint8_t* read_buff = (uint8_t*) calloc(i2s_read_len, sizeof(char));
-    uint8_t* i2s_write_buff = (uint8_t*) calloc(i2s_read_len, sizeof(char));
-    int tot_size = sizeof(audio_table);
+    uint8_t* i2s_write_buff = (uint8_t*) calloc(BUFFER_SIZE * 8, sizeof(char));
+
     while (1)
     {
         ESP_LOGI(TAG, "Start of loop");
         int offset = 0;
-        while (offset < tot_size)
+        while (offset < sizeof(audio_table))
         {
-            int play_len = ((tot_size - offset) > (BUFFER_SIZE)) ? (BUFFER_SIZE) : (tot_size - offset);
+            int play_len = ((sizeof(audio_table) - offset) > (BUFFER_SIZE)) ? (BUFFER_SIZE) : (sizeof(audio_table) - offset);
             uint8_t* p = i2s_write_buff;
-            ESP_LOGI(TAG, "Start copying");
             for(int i = 0; i < play_len; i++) {
             	*p++ = 0;
-            	*p++ = ((signed char )audio_table[i]) / 8;
+            	*p++ = ((signed char )audio_table[i + offset]) / 8;
+            	*p++ = 0;
+            	*p++ = ((signed char )audio_table[i + offset]) / 8;
+            	*p++ = 0;
+            	*p++ = ((signed char )audio_table[i + offset]) / 8;
+            	*p++ = 0;
+            	*p++ = ((signed char )audio_table[i + offset]) / 8;
             }
-            ESP_LOGI(TAG, "...done");
 
             ESP_LOGI(TAG, "Writing to i2s size %d", play_len);
-            i2s_write(I2S_NUM, i2s_write_buff, play_len * 2, &bytes_written, portMAX_DELAY);
+            i2s_write(I2S_NUM, i2s_write_buff, play_len * 8, &bytes_written, portMAX_DELAY);
             ESP_LOGI(TAG, "..done");
             offset += play_len;
         }
-        ESP_LOGI(TAG, "last block written");
-        vTaskDelay(100 / portTICK_PERIOD_MS);
     }
-    free(read_buff);
     free(i2s_write_buff);
     vTaskDelete(NULL);
 }
@@ -169,4 +148,4 @@ esp_err_t app_main(void)
 // FIXME    xTaskCreate(adc_read_task, "ADC read task", 2048, NULL, 5, NULL);
     return ESP_OK;
 }
-#endif
+
