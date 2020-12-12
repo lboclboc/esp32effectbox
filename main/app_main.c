@@ -8,9 +8,12 @@
 #include "esp_partition.h"
 #include "driver/i2s.h"
 #include "driver/adc.h"
-#include "audio_example_file.h"
 #include "esp_adc_cal.h"
 #include "esp_rom_sys.h"
+#include "esp_task_wdt.h"
+
+typedef int16_t sample_t;
+#include "audio_example_file.h"
 
 static const char *TAG = "app_main";
 
@@ -20,21 +23,18 @@ static const char *TAG = "app_main";
 //i2s number
 #define I2S_NUM           		  (I2S_NUM_0)
 //i2s sample rate
-#define I2S_SAMPLE_RATE   		  (44100)
+#define I2S_SAMPLE_RATE   		  (16000)
 //i2s data bits
 #define I2S_SAMPLE_BITS   		  (I2S_BITS_PER_SAMPLE_16BIT)
 //enable display buffer for debug
 #define EXAMPLE_I2S_BUF_DEBUG     (0)
 //I2S read buffer length
-#define BUFFER_SIZE      		  (256)
-//I2S data format
-#define I2S_FORMAT        		  (I2S_CHANNEL_FMT_ONLY_LEFT)
-//I2S channel number
-#define I2S_CHANNEL_NUM   		  ((I2S_FORMAT < I2S_CHANNEL_FMT_ONLY_RIGHT) ? (2) : (1))
+#define BUFFER_LENGTH      		  (256)
 //I2S built-in ADC unit
 #define I2S_ADC_UNIT              ADC_UNIT_1
 //I2S built-in ADC channel
 #define I2S_ADC_CHANNEL           ADC1_CHANNEL_0
+
 
 /**
  * @brief I2S ADC mode init.
@@ -52,18 +52,24 @@ void i2s_init(void)
         .sample_rate =  I2S_SAMPLE_RATE,
         .bits_per_sample = I2S_SAMPLE_BITS,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-        .channel_format = I2S_CHANNEL_FMT_ALL_RIGHT,
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
         .intr_alloc_flags = 0,
         .dma_buf_count = 2,
-        .dma_buf_len = BUFFER_SIZE,
+        .dma_buf_len = BUFFER_LENGTH,
         .use_apll = 1,
      };
 
      //install and start i2s driver
-     i2s_driver_install(i2s_num, &i2s_config, 0, NULL);
+     if (i2s_driver_install(i2s_num, &i2s_config, 0, NULL) != ESP_OK) {
+         ESP_LOGE(TAG, "Failed calling i2s_driver_install");
+         return;
+     }
 
      //init DAC pad
-     i2s_set_dac_mode(I2S_DAC_CHANNEL_DISABLE);
+     if (i2s_set_dac_mode(I2S_DAC_CHANNEL_DISABLE) != ESP_OK) {
+     	 ESP_LOGI(TAG, "Failed calling i2s_set_dac_mode");
+         return;
+     }
 
      static const i2s_pin_config_t pin_config = {
          .bck_io_num = 26,
@@ -71,21 +77,16 @@ void i2s_init(void)
          .data_out_num = 27,
          .data_in_num = I2S_PIN_NO_CHANGE
      };
-     i2s_set_pin(i2s_num, &pin_config);
-
-#if 0
-     ESP_LOGI(TAG, "Setting sample rate");
-
-     if (ESP_OK != i2s_set_sample_rates(i2s_num, I2S_SAMPLE_RATE)) {
-         ESP_LOGI(TAG, "..failed");
+     if (i2s_set_pin(i2s_num, &pin_config) != ESP_OK) {
+     	 ESP_LOGI(TAG, "Failed calling i2s_set_pin");
+         return;
      }
-     else {
-         ESP_LOGI(TAG, "..ok");
-     }
-#endif
 
      //init ADC pad
-     i2s_set_adc_mode(I2S_ADC_UNIT, I2S_ADC_CHANNEL);
+     if (i2s_set_adc_mode(I2S_ADC_UNIT, I2S_ADC_CHANNEL) != ESP_OK) {
+     	 ESP_LOGI(TAG, "Failed calling i2s_set_adc_mode");
+         return;
+     }
 }
 
 /**
@@ -93,35 +94,52 @@ void i2s_init(void)
  */
 void i2s_dac_task(void*arg)
 {
-    size_t bytes_written;
+	size_t bytes_written;
 
-    uint8_t* i2s_write_buff = (uint8_t*) calloc(BUFFER_SIZE * 8, sizeof(char));
+    sample_t *i2s_write_buff = (sample_t*) calloc(BUFFER_LENGTH, sizeof(sample_t));
+    if (i2s_write_buff == 0) {
+        ESP_LOGE(TAG, "Failed to allocate memory");
+        return;
+    }
 
     while (1)
     {
         ESP_LOGI(TAG, "Start of loop");
+#if 1 // Audiofile
         int offset = 0;
-        while (offset < sizeof(audio_table))
+        const int n_samples =  sizeof audio_table / sizeof audio_table[0];
+        while (offset < n_samples)
         {
-            int play_len = ((sizeof(audio_table) - offset) > (BUFFER_SIZE)) ? (BUFFER_SIZE) : (sizeof(audio_table) - offset);
-            uint8_t* p = i2s_write_buff;
+            int play_len = (n_samples - offset) > (BUFFER_LENGTH) ? (BUFFER_LENGTH) : (n_samples - offset);
+            sample_t* p = i2s_write_buff;
             for(int i = 0; i < play_len; i++) {
-            	*p++ = 0;
-            	*p++ = ((signed char )audio_table[i + offset]) / 8;
-            	*p++ = 0;
-            	*p++ = ((signed char )audio_table[i + offset]) / 8;
-            	*p++ = 0;
-            	*p++ = ((signed char )audio_table[i + offset]) / 8;
-            	*p++ = 0;
-            	*p++ = ((signed char )audio_table[i + offset]) / 8;
+            	*p++ = audio_table[i + offset];
+            	*p++ = audio_table[i + offset];
             }
 
-            ESP_LOGI(TAG, "Writing to i2s size %d", play_len);
-            i2s_write(I2S_NUM, i2s_write_buff, play_len * 8, &bytes_written, portMAX_DELAY);
-            ESP_LOGI(TAG, "..done");
+//            ESP_LOGI(TAG, "Writing to i2s size %d", play_len);
+            i2s_write(I2S_NUM, i2s_write_buff, play_len * 2 * sizeof(sample_t), &bytes_written, portMAX_DELAY);
+//            ESP_LOGI(TAG, "..done, bytes %d", bytes_written);
             offset += play_len;
         }
+#endif
+
+#if 0 // Sawtooth
+        for(int i = 0; i < BUFFER_LENGTH; i += 2) {
+        	i2s_write_buff[i] = i*(65535 / BUFFER_LENGTH);
+        	i2s_write_buff[i+1] = i*(65535 / BUFFER_LENGTH);
+        }
+        i2s_write(I2S_NUM, i2s_write_buff, BUFFER_LENGTH * sizeof(sample_t), &bytes_written, portMAX_DELAY);
+#endif
+
+#if 0
+        if (esp_task_wdt_reset() != ESP_OK) {
+            ESP_LOGE(TAG, "esp_task_wdt_reset failed");
+        }
+#endif
+        taskYIELD();
     }
+
     free(i2s_write_buff);
     vTaskDelete(NULL);
 }
