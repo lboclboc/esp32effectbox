@@ -22,7 +22,9 @@ typedef int16_t sample_t;
 static const char *TAG = "app_main";
 
 //I2S read buffer length
-#define BUFFER_LENGTH      		  (512)
+#define BUFFER_SIZE      		  (512)
+
+#define SAMPLE_RATE 44100
 
 
 /**
@@ -36,16 +38,17 @@ static const char *TAG = "app_main";
 int i2s_init(void)
 {
      esp_err_t rc;
+
 	 // I2S DAC Output
      i2s_config_t i2s_config = {
         .mode = I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN,
-        .sample_rate =  44100,
+        .sample_rate =  SAMPLE_RATE,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
         .intr_alloc_flags = 0,
         .dma_buf_count = 2,
-        .dma_buf_len = BUFFER_LENGTH,
+        .dma_buf_len = BUFFER_SIZE,
         .use_apll = 1,
 		.fixed_mclk = 0,
      };
@@ -73,15 +76,10 @@ int i2s_init(void)
          return rc;
      }
 
-     if ((rc = i2s_start(I2S_NUM_0)) != ESP_OK) {
-    	 ESP_LOGE(TAG, "failed to start i2s");
-    	 return rc;
-     }
-
-     if ((rc = i2s_adc_enable(I2S_NUM_0)) != ESP_OK) {
-    	 ESP_LOGE(TAG, "failed enable adc");
-    	 return rc;
-     }
+// Does not fix 1-bit size error: i2s_set_sample_rates(I2S_NUM_0, SAMPLE_RATE);
+// Does not fix 1-bit size error: i2s_set_clk(I2S_NUM_0, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
+// Does not fix 1-bit size error: adc1_config_width(ADC_WIDTH_BIT_12);
+// Does not fix 1-bit size error: i2s_adc_enable(I2S_NUM_0);
 
      return ESP_OK;
 }
@@ -94,34 +92,40 @@ void i2s_dac_task(void*arg)
 	size_t bytes_written = 0;
 	size_t bytes_read = 0;
 
-    size_t buffer_size = BUFFER_LENGTH * sizeof(sample_t);
-
-    sample_t *i2s_buffer = (sample_t*) calloc(BUFFER_LENGTH, sizeof(sample_t));
-
+    uint8_t *i2s_buffer = malloc(BUFFER_SIZE);
     if (i2s_buffer == 0) {
         ESP_LOGE(TAG, "Failed to allocate memory");
         return;
     }
+    memset(i2s_buffer, 0, BUFFER_SIZE);
 
     unsigned short i;
-	for(i = 0; i < BUFFER_LENGTH; i++) {
+#if 0
+    // Fill with square wave data.
+	for(i = 0; i < BUFFER_SIZE; i++) {
 		i2s_buffer[i] = (i & 8) ? 0x7FFF : 0x0000;
 	}
-	bytes_read = buffer_size;
+#endif
 
-    while (1)
+	while (1)
     {
     	for(i = 0; i < 200; i++) {
-			i2s_read(I2S_NUM_0, i2s_buffer, buffer_size, &bytes_read, portMAX_DELAY);
+			i2s_read(I2S_NUM_0, i2s_buffer, BUFFER_SIZE, &bytes_read, portMAX_DELAY);
 			i2s_write(I2S_NUM_0, i2s_buffer, bytes_read, &bytes_written, portMAX_DELAY);
     	}
+    	// Every now and then, debug print sampled data.
 		ESP_LOGI(TAG, "Non-zero data:");
-    	for(i = 0; i < BUFFER_LENGTH; i++) {
+    	for(i = 0; i < BUFFER_SIZE; i++) {
     		if (i2s_buffer[i] != 0) {
     	        ESP_LOGI(TAG, "i2s_buffer[%d] = %d, %d, %d", i, i2s_buffer[i], i2s_buffer[i+1], i2s_buffer[i+2]);
     	        break;
     		}
     	}
+    }
+
+	if (i2s_adc_disable(I2S_NUM_0) != ESP_OK) {
+		ESP_LOGE(TAG, "failed enable adc");
+		return;
     }
 
     free(i2s_buffer);
