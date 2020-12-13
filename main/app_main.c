@@ -39,6 +39,21 @@ int i2s_init(void)
 {
      esp_err_t rc;
 
+#if 0 // 6086: Does not fix 1-bit size error.
+     // powerdown APLL/PLLA
+     SET_PERI_REG_MASK(RTC_CNTL_ANA_CONF_REG, RTC_CNTL_PLLA_FORCE_PD_M);
+     CLEAR_PERI_REG_MASK(RTC_CNTL_ANA_CONF_REG, RTC_CNTL_PLLA_FORCE_PU_M);
+
+     // config adc atten and width
+     adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_11db);
+     adc1_config_width(ADC_WIDTH_12Bit);
+
+     // set pattern tbl and invert, might not need, double check
+     SYSCON.saradc_ctrl.sar1_patt_len = 1;
+     SYSCON.saradc_sar1_patt_tab[0] = 0b00001111000011110000111100001111;
+     SYSCON.saradc_ctrl2.sar1_inv = 1;
+#endif
+
 	 // I2S DAC Output
      i2s_config_t i2s_config = {
         .mode = I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN,
@@ -76,10 +91,17 @@ int i2s_init(void)
          return rc;
      }
 
+// Does not fix 1-bit size error:  vTaskDelay(5000/portTICK_RATE_MS); i2s_adc_enable(I2S_NUM_0);
 // Does not fix 1-bit size error: i2s_set_sample_rates(I2S_NUM_0, SAMPLE_RATE);
 // Does not fix 1-bit size error: i2s_set_clk(I2S_NUM_0, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
 // Does not fix 1-bit size error: adc1_config_width(ADC_WIDTH_BIT_12);
 // Does not fix 1-bit size error: i2s_adc_enable(I2S_NUM_0);
+
+#if 0 // 6086: Does not fix 1-bit size error.
+     // powerup APLL/PLLA
+     SET_PERI_REG_MASK(RTC_CNTL_ANA_CONF_REG, RTC_CNTL_PLLA_FORCE_PU_M);
+     CLEAR_PERI_REG_MASK(RTC_CNTL_ANA_CONF_REG, RTC_CNTL_PLLA_FORCE_PD_M);
+#endif
 
      return ESP_OK;
 }
@@ -110,7 +132,10 @@ void i2s_dac_task(void*arg)
 	while (1)
     {
     	for(i = 0; i < 200; i++) {
+// Does not fix 1-bit size error: i2s_adc_enable(I2S_NUM_0); - also creates enormous lagging
 			i2s_read(I2S_NUM_0, i2s_buffer, BUFFER_SIZE, &bytes_read, portMAX_DELAY);
+// Does not fix 1-bit size error: i2s_adc_disable(I2S_NUM_0);
+// Does not fix 1-bit size error: Filling the buffer with data as loop above.
 			i2s_write(I2S_NUM_0, i2s_buffer, bytes_read, &bytes_written, portMAX_DELAY);
     	}
     	// Every now and then, debug print sampled data.
@@ -121,11 +146,6 @@ void i2s_dac_task(void*arg)
     	        break;
     		}
     	}
-    }
-
-	if (i2s_adc_disable(I2S_NUM_0) != ESP_OK) {
-		ESP_LOGE(TAG, "failed enable adc");
-		return;
     }
 
     free(i2s_buffer);
