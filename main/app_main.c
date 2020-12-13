@@ -11,29 +11,18 @@
 #include "esp_adc_cal.h"
 #include "esp_rom_sys.h"
 #include "esp_task_wdt.h"
+//#include "soc/dport_access.h"
+#include "soc/dport_reg.h"
+#include "soc/dac_periph.h"
+#include "soc/syscon_periph.h"
 
 typedef int16_t sample_t;
 #include "audio_example_file.h"
 
 static const char *TAG = "app_main";
 
-#define V_REF   1100
-#define ADC1_TEST_CHANNEL (ADC1_CHANNEL_7)
-
-//i2s number
-#define I2S_NUM           		  (I2S_NUM_0)
-//i2s sample rate
-#define I2S_SAMPLE_RATE   		  (16000)
-//i2s data bits
-#define I2S_SAMPLE_BITS   		  (I2S_BITS_PER_SAMPLE_16BIT)
-//enable display buffer for debug
-#define EXAMPLE_I2S_BUF_DEBUG     (0)
 //I2S read buffer length
-#define BUFFER_LENGTH      		  (256)
-//I2S built-in ADC unit
-#define I2S_ADC_UNIT              ADC_UNIT_1
-//I2S built-in ADC channel
-#define I2S_ADC_CHANNEL           ADC1_CHANNEL_0
+#define BUFFER_LENGTH      		  (512)
 
 
 /**
@@ -44,31 +33,27 @@ static const char *TAG = "app_main";
  * - 26: BCK
  * - 27: Data_Out
  */
-void i2s_init(void)
+int i2s_init(void)
 {
-     int i2s_num = I2S_NUM;
+     esp_err_t rc;
+	 // I2S DAC Output
      i2s_config_t i2s_config = {
-        .mode = I2S_MODE_MASTER | I2S_MODE_TX, // I2S_MODE_RX |
-        .sample_rate =  I2S_SAMPLE_RATE,
-        .bits_per_sample = I2S_SAMPLE_BITS,
+        .mode = I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN,
+        .sample_rate =  44100,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
         .intr_alloc_flags = 0,
         .dma_buf_count = 2,
         .dma_buf_len = BUFFER_LENGTH,
         .use_apll = 1,
+		.fixed_mclk = 0,
      };
 
      //install and start i2s driver
-     if (i2s_driver_install(i2s_num, &i2s_config, 0, NULL) != ESP_OK) {
+     if ((rc = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL)) != ESP_OK) {
          ESP_LOGE(TAG, "Failed calling i2s_driver_install");
-         return;
-     }
-
-     //init DAC pad
-     if (i2s_set_dac_mode(I2S_DAC_CHANNEL_DISABLE) != ESP_OK) {
-     	 ESP_LOGI(TAG, "Failed calling i2s_set_dac_mode");
-         return;
+         return rc;
      }
 
      static const i2s_pin_config_t pin_config = {
@@ -77,16 +62,28 @@ void i2s_init(void)
          .data_out_num = 27,
          .data_in_num = I2S_PIN_NO_CHANGE
      };
-     if (i2s_set_pin(i2s_num, &pin_config) != ESP_OK) {
-     	 ESP_LOGI(TAG, "Failed calling i2s_set_pin");
-         return;
+
+     if ((rc = i2s_set_pin(I2S_NUM_0, &pin_config)) != ESP_OK) {
+     	 ESP_LOGE(TAG, "Failed calling i2s_set_pin");
+         return rc;
      }
 
-     //init ADC pad
-     if (i2s_set_adc_mode(I2S_ADC_UNIT, I2S_ADC_CHANNEL) != ESP_OK) {
-     	 ESP_LOGI(TAG, "Failed calling i2s_set_adc_mode");
-         return;
+     if ((rc = i2s_set_adc_mode(ADC_UNIT_1, ADC1_CHANNEL_0)) != ESP_OK) {
+     	 ESP_LOGE(TAG, "Failed calling i2s_set_adc_mode");
+         return rc;
      }
+
+     if ((rc = i2s_start(I2S_NUM_0)) != ESP_OK) {
+    	 ESP_LOGE(TAG, "failed to start i2s");
+    	 return rc;
+     }
+
+     if ((rc = i2s_adc_enable(I2S_NUM_0)) != ESP_OK) {
+    	 ESP_LOGE(TAG, "failed enable adc");
+    	 return rc;
+     }
+
+     return ESP_OK;
 }
 
 /**
@@ -94,76 +91,54 @@ void i2s_init(void)
  */
 void i2s_dac_task(void*arg)
 {
-	size_t bytes_written;
+	size_t bytes_written = 0;
+	size_t bytes_read = 0;
 
-    sample_t *i2s_write_buff = (sample_t*) calloc(BUFFER_LENGTH, sizeof(sample_t));
-    if (i2s_write_buff == 0) {
+    size_t buffer_size = BUFFER_LENGTH * sizeof(sample_t);
+
+    sample_t *i2s_buffer = (sample_t*) calloc(BUFFER_LENGTH, sizeof(sample_t));
+
+    if (i2s_buffer == 0) {
         ESP_LOGE(TAG, "Failed to allocate memory");
         return;
     }
 
+    unsigned short i;
+	for(i = 0; i < BUFFER_LENGTH; i++) {
+		i2s_buffer[i] = (i & 8) ? 0x7FFF : 0x0000;
+	}
+	bytes_read = buffer_size;
+
     while (1)
     {
-        ESP_LOGI(TAG, "Start of loop");
-#if 1 // Audiofile
-        int offset = 0;
-        const int n_samples =  sizeof audio_table / sizeof audio_table[0];
-        while (offset < n_samples)
-        {
-            int play_len = (n_samples - offset) > (BUFFER_LENGTH) ? (BUFFER_LENGTH) : (n_samples - offset);
-            sample_t* p = i2s_write_buff;
-            for(int i = 0; i < play_len; i++) {
-            	*p++ = audio_table[i + offset];
-            	*p++ = audio_table[i + offset];
-            }
-
-//            ESP_LOGI(TAG, "Writing to i2s size %d", play_len);
-            i2s_write(I2S_NUM, i2s_write_buff, play_len * 2 * sizeof(sample_t), &bytes_written, portMAX_DELAY);
-//            ESP_LOGI(TAG, "..done, bytes %d", bytes_written);
-            offset += play_len;
-        }
-#endif
-
-#if 0 // Sawtooth
-        for(int i = 0; i < BUFFER_LENGTH; i += 2) {
-        	i2s_write_buff[i] = i*(65535 / BUFFER_LENGTH);
-        	i2s_write_buff[i+1] = i*(65535 / BUFFER_LENGTH);
-        }
-        i2s_write(I2S_NUM, i2s_write_buff, BUFFER_LENGTH * sizeof(sample_t), &bytes_written, portMAX_DELAY);
-#endif
-
-#if 0
-        if (esp_task_wdt_reset() != ESP_OK) {
-            ESP_LOGE(TAG, "esp_task_wdt_reset failed");
-        }
-#endif
-        taskYIELD();
+    	for(i = 0; i < 200; i++) {
+			i2s_read(I2S_NUM_0, i2s_buffer, buffer_size, &bytes_read, portMAX_DELAY);
+			i2s_write(I2S_NUM_0, i2s_buffer, bytes_read, &bytes_written, portMAX_DELAY);
+    	}
+		ESP_LOGI(TAG, "Non-zero data:");
+    	for(i = 0; i < BUFFER_LENGTH; i++) {
+    		if (i2s_buffer[i] != 0) {
+    	        ESP_LOGI(TAG, "i2s_buffer[%d] = %d, %d, %d", i, i2s_buffer[i], i2s_buffer[i+1], i2s_buffer[i+2]);
+    	        break;
+    		}
+    	}
     }
 
-    free(i2s_write_buff);
+    free(i2s_buffer);
     vTaskDelete(NULL);
-}
-
-void adc_read_task(void* arg)
-{
-    adc1_config_width(ADC_WIDTH_12Bit);
-    adc1_config_channel_atten(ADC1_TEST_CHANNEL, ADC_ATTEN_11db);
-    esp_adc_cal_characteristics_t characteristics;
-    esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, V_REF, &characteristics);
-    while(1) {
-        uint32_t voltage;
-        esp_adc_cal_get_voltage(ADC1_TEST_CHANNEL, &characteristics, &voltage);
-        ESP_LOGI(TAG, "%d mV", voltage);
-        vTaskDelay(200 / portTICK_RATE_MS);
-    }
 }
 
 esp_err_t app_main(void)
 {
-    i2s_init();
+    esp_err_t rc;
     esp_log_level_set("I2S", ESP_LOG_INFO);
+    if ((rc = i2s_init()) != ESP_OK) {
+    	return rc;
+    }
+
     xTaskCreate(i2s_dac_task, "i2s_adc_dac", 1024 * 2, NULL, 5, NULL);
 // FIXME    xTaskCreate(adc_read_task, "ADC read task", 2048, NULL, 5, NULL);
+
     return ESP_OK;
 }
 
