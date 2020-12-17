@@ -13,6 +13,7 @@
 #include "esp_task_wdt.h"
 //#include "soc/dport_access.h"
 #include "soc/dport_reg.h"
+#include "soc/apb_ctrl_reg.h"
 #include "soc/dac_periph.h"
 #include "soc/syscon_periph.h"
 
@@ -22,10 +23,9 @@ typedef int16_t sample_t;
 static const char *TAG = "app_main";
 
 //I2S read buffer length
-#define BUFFER_SIZE      		  (512)
+#define BUFFER_SIZE      		  (128)
 
 #define SAMPLE_RATE 44100
-
 
 /**
  * @brief I2S ADC mode init.
@@ -54,19 +54,31 @@ int i2s_init(void)
      SYSCON.saradc_ctrl2.sar1_inv = 1;
 #endif
 
+     // Testlog:
+     // - Disabling RX does not help.
+     // - Increasing I2S_TX_BCK_DIV_NUM slows the clock, but same number of bits i sent.
+     //
+     // To test:
+     // - Use two I2S controllers
+
+
+
 	 // I2S DAC Output
      i2s_config_t i2s_config = {
-        .mode = I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN,
+        .mode = I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX, // | I2S_MODE_ADC_BUILT_IN,
         .sample_rate =  SAMPLE_RATE,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+		// Using I2S_CHANNEL_FMT_RIGHT_LEFT does not fix 1bit problem
         .intr_alloc_flags = 0,
         .dma_buf_count = 2,
         .dma_buf_len = BUFFER_SIZE,
         .use_apll = 1,
-		.fixed_mclk = 0,
+		.fixed_mclk = 64,
      };
+
+    i2s_config.mode |= I2S_MODE_ADC_BUILT_IN;
 
      //install and start i2s driver
      if ((rc = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL)) != ESP_OK) {
@@ -85,6 +97,87 @@ int i2s_init(void)
      	 ESP_LOGE(TAG, "Failed calling i2s_set_pin");
          return rc;
      }
+
+     // See page 310 in refmanual.
+     // No change: REG_SET_FIELD(I2S_CONF_REG(0), I2S_RX_MSB_SHIFT, 1);
+     // No change: REG_SET_FIELD(I2S_CONF_REG(0), I2S_TX_MSB_SHIFT, 1);
+     // No change: REG_SET_FIELD(I2S_CONF_REG(0), I2S_RX_MSB_SHIFT, 0);
+     // No change: REG_SET_FIELD(I2S_CONF_REG(0), I2S_RX_MSB_SHIFT, 0);
+
+     // No change: REG_SET_FIELD(I2S_CLKM_CONF_REG(0), I2S_CLKA_ENA, 1);
+
+     // No Change: REG_SET_FIELD(I2S_CLKM_CONF_REG(0), I2S_CLKM_DIV_NUM, 14);
+     // No Change: REG_SET_FIELD(I2S_CLKM_CONF_REG(0), I2S_CLKM_DIV_A, 63);
+     // No Change: REG_SET_FIELD(I2S_CLKM_CONF_REG(0), I2S_CLKM_DIV_B, 11);
+     // No Change:  REG_SET_FIELD(I2S_SAMPLE_RATE_CONF_REG(0), I2S_RX_BCK_DIV_NUM, 8);
+     // No Change: REG_SET_FIELD(I2S_SAMPLE_RATE_CONF_REG(0), I2S_TX_BCK_DIV_NUM, 8);
+     // No Change: REG_SET_FIELD(I2S_CONF_REG(0), I2S_RX_MSB_SHIFT, 1);
+     // No Change: REG_SET_FIELD(I2S_CONF_REG(0), I2S_TX_MSB_SHIFT, 1);
+
+	 REG_SET_FIELD(I2S_CONF2_REG(0), I2S_LCD_EN, 0); // <----- This makes it become correct clock forms, but only 2.7 Khz sample rate.
+
+     ESP_LOGI(TAG, "I2S_CLKM_CONF_REG(0): %08X", I2S_CLKM_CONF_REG(0));
+     ESP_LOGI(TAG, "I2S_CLKA_ENA(0) = %d",       REG_GET_FIELD(I2S_CLKM_CONF_REG(0), I2S_CLKA_ENA));
+     ESP_LOGI(TAG, "I2S_CLKM_DIV_NUM(0) = %d",   REG_GET_FIELD(I2S_CLKM_CONF_REG(0), I2S_CLKM_DIV_NUM));
+     ESP_LOGI(TAG, "I2S_CLKM_DIV_A(0) = %d",     REG_GET_FIELD(I2S_CLKM_CONF_REG(0), I2S_CLKM_DIV_A));
+     ESP_LOGI(TAG, "I2S_CLKM_DIV_B(0) = %d",     REG_GET_FIELD(I2S_CLKM_CONF_REG(0), I2S_CLKM_DIV_B));
+
+     ESP_LOGI(TAG, "I2S_RX_BCK_DIV_NUM(0) = %d", REG_GET_FIELD(I2S_SAMPLE_RATE_CONF_REG(0), I2S_RX_BCK_DIV_NUM));
+     ESP_LOGI(TAG, "I2S_TX_BCK_DIV_NUM(0) = %d", REG_GET_FIELD(I2S_SAMPLE_RATE_CONF_REG(0), I2S_TX_BCK_DIV_NUM));
+
+     ESP_LOGI(TAG, "I2S_RX_PCM_BYPASS(0) = %d", REG_GET_FIELD(I2S_CONF1_REG(0), I2S_RX_PCM_BYPASS));
+     ESP_LOGI(TAG, "I2S_TX_PCM_BYPASS(0) = %d", REG_GET_FIELD(I2S_CONF1_REG(0), I2S_TX_PCM_BYPASS));
+
+     ESP_LOGI(TAG, "I2S_LCD_EN(0) = %d", REG_GET_FIELD(I2S_CONF2_REG(0), I2S_LCD_EN));
+	 ESP_LOGI(TAG, "I2S_CAMERA_EN(0) = %d", REG_GET_FIELD(I2S_CONF2_REG(0), I2S_CAMERA_EN));
+     ESP_LOGI(TAG, "I2S_LCD_TX_SDX2_EN(0) = %d", REG_GET_FIELD(I2S_CONF2_REG(0), I2S_LCD_TX_SDX2_EN));
+     ESP_LOGI(TAG, "I2S_LCD_TX_WRX2_EN(0) = %d", REG_GET_FIELD(I2S_CONF2_REG(0), I2S_LCD_TX_WRX2_EN));
+
+
+     ESP_LOGI(TAG, "I2S_RX_MSB_SHIFT(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_RX_MSB_SHIFT));
+     ESP_LOGI(TAG, "I2S_TX_MSB_SHIFT(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_TX_MSB_SHIFT));
+     ESP_LOGI(TAG, "I2S_RX_MSB_RIGHT(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_RX_MSB_RIGHT));
+     ESP_LOGI(TAG, "I2S_RX_RIGHT_FIRST(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_RX_RIGHT_FIRST));
+     ESP_LOGI(TAG, "I2S_RX_SHORT_SYNC(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_RX_SHORT_SYNC));
+     ESP_LOGI(TAG, "I2S_TX_SHORT_SYNC(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_TX_SHORT_SYNC));
+     ESP_LOGI(TAG, "I2S_RX_SLAVE_MOD(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_RX_SLAVE_MOD));
+     ESP_LOGI(TAG, "I2S_TX_SLAVE_MOD(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_TX_SLAVE_MOD));
+     ESP_LOGI(TAG, "I2S_TX_START(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_TX_START));
+     ESP_LOGI(TAG, "I2S_RX_START(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_RX_START));
+     ESP_LOGI(TAG, "I2S_TX_PDM_HP_BYPASS(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_TX_PDM_HP_BYPASS));
+     ESP_LOGI(TAG, "I2S_TX_SLAVE_MOD(0) = %d", REG_GET_FIELD(I2S_CONF_REG(0), I2S_TX_SLAVE_MOD));
+
+     ESP_LOGI(TAG, "I2S_RX_FIFO_MOD_FORCE_EN(0) = %d", REG_GET_FIELD(I2S_FIFO_CONF_REG(0), I2S_RX_FIFO_MOD_FORCE_EN));
+     ESP_LOGI(TAG, "I2S_TX_FIFO_MOD_FORCE_EN(0) = %d", REG_GET_FIELD(I2S_FIFO_CONF_REG(0), I2S_TX_FIFO_MOD_FORCE_EN));
+     ESP_LOGI(TAG, "I2S_TX_DATA_NUM(0) = %d", REG_GET_FIELD(I2S_FIFO_CONF_REG(0), I2S_TX_DATA_NUM));
+     ESP_LOGI(TAG, "I2S_RX_DATA_NUM(0) = %d", REG_GET_FIELD(I2S_FIFO_CONF_REG(0), I2S_RX_DATA_NUM));
+     ESP_LOGI(TAG, "I2S_TX_FIFO_MOD(0) = %d", REG_GET_FIELD(I2S_FIFO_CONF_REG(0), I2S_TX_FIFO_MOD));
+     ESP_LOGI(TAG, "I2S_TX_CHAN_MOD(0) = %d", REG_GET_FIELD(I2S_FIFO_CONF_REG(0), I2S_TX_CHAN_MOD));
+     ESP_LOGI(TAG, "I2S_RX_FIFO_MOD(0) = %d", REG_GET_FIELD(I2S_FIFO_CONF_REG(0), I2S_RX_FIFO_MOD));
+     ESP_LOGI(TAG, "I2S_RX_CHAN_MOD(0) = %d", REG_GET_FIELD(I2S_FIFO_CONF_REG(0), I2S_RX_CHAN_MOD));
+
+     ESP_LOGI(TAG, "I2S_TX_PDM_FP(0) = %d", REG_GET_FIELD(I2S_PDM_FREQ_CONF_REG(0), I2S_TX_PDM_FP));
+     ESP_LOGI(TAG, "I2S_TX_PDM_FS(0) = %d", REG_GET_FIELD(I2S_PDM_FREQ_CONF_REG(0), I2S_TX_PDM_FS));
+
+     	 // Page 317
+     ESP_LOGI(TAG, "I2S_TX_PDM_EN(0) = %d", REG_GET_FIELD(I2S_PDM_CONF_REG(0), I2S_TX_PDM_EN));
+     ESP_LOGI(TAG, "I2S_PCM2PDM_CONV_EN(0) = %d", REG_GET_FIELD(I2S_PDM_CONF_REG(0), I2S_PCM2PDM_CONV_EN));
+     ESP_LOGI(TAG, "I2S_TX_I2S_TX_PDM_SIGMADELTA_IN_SHIFTPDM_EN(0) = %d", REG_GET_FIELD(I2S_PDM_CONF_REG(0), I2S_TX_PDM_SIGMADELTA_IN_SHIFT));
+     ESP_LOGI(TAG, "I2S_TX_PDM_SINC_IN_SHIFT(0) = %d", REG_GET_FIELD(I2S_PDM_CONF_REG(0), I2S_TX_PDM_SINC_IN_SHIFT));
+     ESP_LOGI(TAG, "I2S_TX_PDM_LP_IN_SHIFT(0) = %d", REG_GET_FIELD(I2S_PDM_CONF_REG(0), I2S_TX_PDM_LP_IN_SHIFT));
+     ESP_LOGI(TAG, "I2S_TX_PDM_HP_IN_SHIFT(0) = %d", REG_GET_FIELD(I2S_PDM_CONF_REG(0), I2S_TX_PDM_HP_IN_SHIFT));
+     ESP_LOGI(TAG, "I2S_RX_PDM_SINC_DSR_16_EN(0) = %d", REG_GET_FIELD(I2S_PDM_CONF_REG(0), I2S_RX_PDM_SINC_DSR_16_EN));
+
+     ESP_LOGI(TAG, "I2S_TX_CHAN_MOD(0) = %d", REG_GET_FIELD(I2S_CONF_CHAN_REG(0), I2S_TX_CHAN_MOD));
+
+     ESP_LOGI(TAG, "APB_CTRL_SARADC_DATA_TO_I2S = %d", REG_GET_FIELD(APB_CTRL_APB_SARADC_CTRL_REG, APB_CTRL_SARADC_DATA_TO_I2S));
+
+#if 0
+     // Stop now, just to find where the clock problem is....
+     ESP_LOGI(TAG, "Task suspended..."); // FIXME: Remove
+     vTaskSuspend(NULL);
+     return 0; // FIXME: Remove
+#endif
 
      if ((rc = i2s_set_adc_mode(ADC_UNIT_1, ADC1_CHANNEL_0)) != ESP_OK) {
      	 ESP_LOGE(TAG, "Failed calling i2s_set_adc_mode");
