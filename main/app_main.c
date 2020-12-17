@@ -28,6 +28,7 @@ static const char *TAG = "app_main";
 #define SAMPLE_RATE 44100
 
 static void dump_registers();
+static void tweak_registers();
 
 /**
  * @brief I2S ADC mode init.
@@ -61,13 +62,32 @@ int i2s_init(void)
      // - Increasing I2S_TX_BCK_DIV_NUM slows the clock, but same number of bits i sent.
      //
      // To test:
-     // - Use two I2S controllers
+     // - Use two I2S controllers I2S0 for ADC and I2S1 for tx
+     // - Check for underruns and overruns...
 
+	 // I2S0 ADC Input
+     i2s_config_t i2s0_config = {
+        .mode = I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN,
+        .sample_rate =  SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .intr_alloc_flags = 0,
+        .dma_buf_count = 2,
+        .dma_buf_len = BUFFER_SIZE,
+        .use_apll = 1,
+		.fixed_mclk = 0,
+     };
 
+     //install and start i2s driver
+     if ((rc = i2s_driver_install(I2S_NUM_0, &i2s0_config, 0, NULL)) != ESP_OK) {
+         ESP_LOGE(TAG, "Failed calling i2s_driver_install");
+         return rc;
+     }
 
-	 // I2S DAC Output
-     i2s_config_t i2s_config = {
-        .mode = I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN,
+	 // I2S1 DAC Output
+     i2s_config_t i2s1_config = {
+        .mode = I2S_MODE_MASTER | I2S_MODE_TX,
         .sample_rate =  SAMPLE_RATE,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
@@ -81,7 +101,7 @@ int i2s_init(void)
      };
 
      //install and start i2s driver
-     if ((rc = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL)) != ESP_OK) {
+     if ((rc = i2s_driver_install(I2S_NUM_1, &i2s1_config, 0, NULL)) != ESP_OK) {
          ESP_LOGE(TAG, "Failed calling i2s_driver_install");
          return rc;
      }
@@ -93,7 +113,7 @@ int i2s_init(void)
          .data_in_num = I2S_PIN_NO_CHANGE
      };
 
-     if ((rc = i2s_set_pin(I2S_NUM_0, &pin_config)) != ESP_OK) {
+     if ((rc = i2s_set_pin(I2S_NUM_1, &pin_config)) != ESP_OK) {
      	 ESP_LOGE(TAG, "Failed calling i2s_set_pin");
          return rc;
      }
@@ -122,7 +142,7 @@ int i2s_init(void)
      CLEAR_PERI_REG_MASK(RTC_CNTL_ANA_CONF_REG, RTC_CNTL_PLLA_FORCE_PD_M);
 #endif
 
-     dump_registers();
+//     dump_registers();
 
      return ESP_OK;
 }
@@ -158,14 +178,14 @@ void i2s_dac_task(void*arg)
 				ESP_LOGE(TAG, "failed to read data");
 			}
 #endif
-			if (i2s_write(I2S_NUM_0, i2s_buffer, bytes_read, &bytes_written, portMAX_DELAY) != ESP_OK) {
+			if (i2s_write(I2S_NUM_1, i2s_buffer, bytes_read, &bytes_written, portMAX_DELAY) != ESP_OK) {
 				ESP_LOGE(TAG, "failed to read data");
 			}
     	}
+#if 0
     	esp_task_wdt_reset();
     	// Every now and then, debug print sampled data.
 		ESP_LOGI(TAG, "Non-zero data:");
-#if 1
     	for(i = 0; i < BUFFER_SIZE; i++) {
     		if (i2s_buffer[i] != 0) {
     	        ESP_LOGI(TAG, "i2s_buffer[%d] = %d, %d, %d", i, i2s_buffer[i], i2s_buffer[i+1], i2s_buffer[i+2]);
@@ -193,7 +213,7 @@ esp_err_t app_main(void)
     return ESP_OK;
 }
 
-void dump_registers()
+void tweak_registers()
 {
     // See page 310 in refmanual.
     // No change: REG_SET_FIELD(I2S_CONF_REG(0), I2S_RX_MSB_SHIFT, 1);
@@ -211,10 +231,13 @@ void dump_registers()
     // No Change: REG_SET_FIELD(I2S_CONF_REG(0), I2S_RX_MSB_SHIFT, 1);
     // No Change: REG_SET_FIELD(I2S_CONF_REG(0), I2S_TX_MSB_SHIFT, 1);
 
-	REG_SET_FIELD(I2S_CONF2_REG(0), I2S_LCD_EN, 0); // <----- This makes it become correct clock forms, but only 2.7 Khz sample rate.
-	REG_SET_FIELD(I2S_CONF_REG(0), I2S_RX_MSB_SHIFT, 1);
-	REG_SET_FIELD(I2S_CONF_REG(0), I2S_TX_MSB_SHIFT, 1);
+	REG_SET_FIELD(I2S_CONF2_REG(0), I2S_LCD_EN, 0); // <----- Setting this to 0t it become correct clock forms, but only 2.7 Khz sample rate. with mclk=0 its 22KHz
+	// No change	REG_SET_FIELD(I2S_CONF_REG(0), I2S_RX_MSB_SHIFT, 1);
+	// No change	REG_SET_FIELD(I2S_CONF_REG(0), I2S_TX_MSB_SHIFT, 1);
+}
 
+void dump_registers()
+{
     ESP_LOGI(TAG, "I2S_CLKM_CONF_REG(0): %08X", I2S_CLKM_CONF_REG(0));
     ESP_LOGI(TAG, "I2S_CLKA_ENA(0) = %d",       REG_GET_FIELD(I2S_CLKM_CONF_REG(0), I2S_CLKA_ENA));
     ESP_LOGI(TAG, "I2S_CLKM_DIV_NUM(0) = %d",   REG_GET_FIELD(I2S_CLKM_CONF_REG(0), I2S_CLKM_DIV_NUM));
