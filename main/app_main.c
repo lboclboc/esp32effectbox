@@ -23,7 +23,7 @@ typedef int16_t sample_t;
 static const char *TAG = "app_main";
 
 //I2S read buffer length
-#define BUFFER_SIZE      		  (1024)
+#define BUFFER_SIZE      		  (512)
 
 #define SAMPLE_RATE 44100
 
@@ -42,22 +42,6 @@ int i2s_init_0(void)
 {
      esp_err_t rc;
 
-#if 0 // ARDUINO CODE
-     i2s_config_t i2s_config = {
-      .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN),
-      .sample_rate =  I2S_SAMPLE_RATE,              // The format of the signal using ADC_BUILT_IN
-      .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT, // is fixed at 12bit, stereo, MSB
-      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-      .communication_format = I2S_COMM_FORMAT_I2S_MSB,
-      .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-      .dma_buf_count = 4,
-      .dma_buf_len = 8,
-      .use_apll = false,
-      .tx_desc_auto_clear = false,
-      .fixed_mclk = 0
-     };
-#endif
-
      // Testlog:
      // - Disabling RX does not help.
      // - Increasing I2S_TX_BCK_DIV_NUM slows the clock, but same number of bits i sent.
@@ -73,9 +57,10 @@ int i2s_init_0(void)
         .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-        .intr_alloc_flags = 0,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
         .dma_buf_count = 2,
         .dma_buf_len = BUFFER_SIZE,
+	    .tx_desc_auto_clear = false,
         .use_apll = false,
 		.fixed_mclk = 0,
      };
@@ -128,7 +113,7 @@ int i2s_init_1()
         .intr_alloc_flags = 0,
         .dma_buf_count = 2,
         .dma_buf_len = BUFFER_SIZE,
-        .use_apll = 1,
+        .use_apll = true,
 		.fixed_mclk = 0,
      };
 
@@ -161,44 +146,47 @@ void i2s_dac_task(void*arg)
 	size_t bytes_written = 0;
 	size_t bytes_read = 0;
 
-    uint8_t *i2s_buffer = malloc(BUFFER_SIZE);
+	sample_t *i2s_buffer = calloc(BUFFER_SIZE, sizeof(sample_t));
     if (i2s_buffer == 0) {
-        ESP_LOGE(TAG, "Failed to allocate memory");
+        ESP_LOGE(TAG, "Failed to allocate buffer memory");
         return;
     }
-    memset(i2s_buffer, 0, BUFFER_SIZE);
 
-    unsigned int i;
+    sample_t *echo_buffer = calloc(4000, sizeof (sample_t));
+    if (echo_buffer == 0) {
+        ESP_LOGE(TAG, "Failed to allocate echo memory");
+         return;
+    }
 
-    // Fill with square wave data. FIXME: Remove later
-	for(i = 0; i < BUFFER_SIZE; i++) {
-		i2s_buffer[i] = i; // (i & 4) ? 0x7F : 0x00;
-	}
-	bytes_read = BUFFER_SIZE;
+    unsigned short i;
+    unsigned short echo_pos = 0;
+    unsigned short sample;
+    sample_t value;
 
 	while (1)
     {
     	for(i = 0; i < 2000; i++) {
-#if 1
-    		if (i2s_read(I2S_NUM_0, i2s_buffer, BUFFER_SIZE, &bytes_read, portMAX_DELAY) != ESP_OK) {
+    		if (i2s_read(I2S_NUM_0, i2s_buffer, BUFFER_SIZE * sizeof(sample_t), &bytes_read, portMAX_DELAY) != ESP_OK) {
 				ESP_LOGE(TAG, "failed to read data");
 			}
-#endif
+
+    		for(sample = 0; sample < BUFFER_SIZE; sample++)
+    		{
+    			value = i2s_buffer[sample] - 2048;
+
+    			value += echo_buffer[echo_pos] / 2;
+    			echo_buffer[echo_pos] = value;
+    			if (++echo_pos >= 4000) {
+    				echo_pos = 0;
+    			}
+
+    			i2s_buffer[sample] = value + 2048;
+    		}
+
 			if (i2s_write(I2S_NUM_1, i2s_buffer, bytes_read, &bytes_written, portMAX_DELAY) != ESP_OK) {
 				ESP_LOGE(TAG, "failed to read data");
 			}
     	}
-#if 0
-    	esp_task_wdt_reset();
-    	// Every now and then, debug print sampled data.
-		ESP_LOGI(TAG, "Non-zero data:");
-    	for(i = 0; i < BUFFER_SIZE; i++) {
-    		if (i2s_buffer[i] != 0) {
-    	        ESP_LOGI(TAG, "i2s_buffer[%d] = %d, %d, %d", i, i2s_buffer[i], i2s_buffer[i+1], i2s_buffer[i+2]);
-    	        break;
-    		}
-    	}
-#endif
     }
 
     free(i2s_buffer);
