@@ -11,7 +11,6 @@
 #include "esp_adc_cal.h"
 #include "esp_rom_sys.h"
 #include "esp_task_wdt.h"
-//#include "soc/dport_access.h"
 #include "soc/dport_reg.h"
 #include "soc/apb_ctrl_reg.h"
 #include "soc/dac_periph.h"
@@ -22,22 +21,17 @@ typedef int16_t sample_t;
 
 static const char *TAG = "app_main";
 
-//I2S read buffer length
 #define BUFFER_SIZE      		  (512)
 
 #define SAMPLE_RATE 44100
 
+// TODO: Use DMA-buffers for filtering instead of the echo-buffer.
+
+#if 0
 static void dump_registers();
 static void tweak_registers();
+#endif
 
-/**
- * @brief I2S ADC mode init.
- * Input is set to ADC channel 0, or GPIO32
- * Outputs are:
- * - 25: WS
- * - 26: BCK
- * - 27: Data_Out
- */
 int i2s_init_0(void)
 {
      esp_err_t rc;
@@ -139,7 +133,7 @@ int i2s_init_1()
 }
 
 /**
- * @brief I2S ADC/DAC example
+ * @brief Main loop
  */
 void i2s_dac_task(void*arg)
 {
@@ -152,7 +146,9 @@ void i2s_dac_task(void*arg)
         return;
     }
 
-    sample_t *echo_buffer = calloc(4000, sizeof (sample_t));
+    int echo_size = 1<<13;
+    int echo_mask = echo_size - 1;
+    sample_t *echo_buffer = calloc(echo_size, sizeof (sample_t));
     if (echo_buffer == 0) {
         ESP_LOGE(TAG, "Failed to allocate echo memory");
          return;
@@ -162,6 +158,7 @@ void i2s_dac_task(void*arg)
     unsigned short echo_pos = 0;
     unsigned short sample;
     sample_t value;
+
 
 	while (1)
     {
@@ -174,11 +171,16 @@ void i2s_dac_task(void*arg)
     		{
     			value = i2s_buffer[sample] - 2048;
 
-    			value += echo_buffer[echo_pos] / 2;
+    			// Echo
+    			value += echo_buffer[echo_pos] / 10;
+
+    			// IIR-filtering.
+     			value +=  -echo_buffer[(echo_pos - 10) & echo_mask] * 0.8
+    					  +echo_buffer[(echo_pos - 25) & echo_mask] * 0.1
+						  ;
+
     			echo_buffer[echo_pos] = value;
-    			if (++echo_pos >= 4000) {
-    				echo_pos = 0;
-    			}
+    			echo_pos = (echo_pos + 1) & echo_mask;
 
     			i2s_buffer[sample] = value + 2048;
     		}
@@ -205,10 +207,11 @@ esp_err_t app_main(void)
     }
 
     xTaskCreate(i2s_dac_task, "i2s_adc_dac", 1024 * 2, NULL, 5, NULL);
-// FIXME    xTaskCreate(adc_read_task, "ADC read task", 2048, NULL, 5, NULL);
 
     return ESP_OK;
 }
+
+#if 0
 
 void tweak_registers()
 {
@@ -291,3 +294,4 @@ void dump_registers(int i2s_num)
 
     ESP_LOGI(TAG, "APB_CTRL_SARADC_DATA_TO_I2S = %d", REG_GET_FIELD(APB_CTRL_APB_SARADC_CTRL_REG, APB_CTRL_SARADC_DATA_TO_I2S));
 }
+#endif
