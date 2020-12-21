@@ -78,7 +78,7 @@ int i2s_init_0(void)
          return rc;
      }
      // config adc atten and width
-     if ((rc = adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_11db)) != ESP_OK) {
+     if ((rc = adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_0)) != ESP_OK) {
      	 ESP_LOGE(TAG, "Failed calling adc1_config_channel_atten");
          return rc;
      }
@@ -162,33 +162,33 @@ void i2s_dac_task(void*arg)
 
 	while (1)
     {
-    	for(i = 0; i < 2000; i++) {
+    	//for(i = 0; i < 2000; i++) {
     		if (i2s_read(I2S_NUM_0, i2s_buffer, BUFFER_SIZE * sizeof(sample_t), &bytes_read, portMAX_DELAY) != ESP_OK) {
 				ESP_LOGE(TAG, "failed to read data");
 			}
 
     		for(sample = 0; sample < BUFFER_SIZE; sample++)
     		{
-    			value = i2s_buffer[sample] - 2048;
-
+    			value = (i2s_buffer[sample] << 4) - 32768; // Scale up from 12->16 bit and make signed.
+#if 1
     			// Echo
-    			value += echo_buffer[echo_pos] / 10;
+    			value += echo_buffer[echo_pos] * 0.4;
 
     			// IIR-filtering.
-     			value +=  -echo_buffer[(echo_pos - 10) & echo_mask] * 0.8
-    					  +echo_buffer[(echo_pos - 25) & echo_mask] * 0.1
+     			value +=  -echo_buffer[(echo_pos - 10) & echo_mask] * 0.0
+    					  +echo_buffer[(echo_pos - 25) & echo_mask] * 0.0
 						  ;
 
     			echo_buffer[echo_pos] = value;
     			echo_pos = (echo_pos + 1) & echo_mask;
-
-    			i2s_buffer[sample] = value + 2048;
+#endif
+    			i2s_buffer[sample] = value; // Note I2S uses two-complement signed data.
     		}
 
 			if (i2s_write(I2S_NUM_1, i2s_buffer, bytes_read, &bytes_written, portMAX_DELAY) != ESP_OK) {
 				ESP_LOGE(TAG, "failed to read data");
 			}
-    	}
+    	//}
     }
 
     free(i2s_buffer);
