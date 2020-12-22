@@ -154,10 +154,10 @@ void i2s_dac_task(void*arg)
          return;
     }
 
-    unsigned short i;
+//    unsigned short i;
     unsigned short echo_pos = 0;
     unsigned short sample;
-    sample_t value;
+    int32_t value;
 
 
 	while (1)
@@ -179,9 +179,17 @@ void i2s_dac_task(void*arg)
     					  +echo_buffer[(echo_pos - 25) & echo_mask] * 0.0
 						  ;
 
+    			if (value > 32767) {
+    				value = 32767;
+    			}
+    			else if (value < -32768) {
+    				value = -32768;
+    			}
+
     			echo_buffer[echo_pos] = value;
     			echo_pos = (echo_pos + 1) & echo_mask;
 #endif
+
     			i2s_buffer[sample] = value; // Note I2S uses two-complement signed data.
     		}
 
