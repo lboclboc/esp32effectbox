@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
@@ -17,25 +18,29 @@
 #include "soc/dac_periph.h"
 #include "soc/syscon_periph.h"
 
-typedef int16_t sample_t;
+typedef uint16_t sample_t;
 #include "audio_example_file.h"
 
-// Scale up from 12->16 bit and make signed.
-#define ADC_TO_SIGNED(x) (((x) << 4) - 32768)
-
+#define ASSERT(val, msg) if(!(val)) { ESP_LOGE(TAG, "assert failed: " #msg); }
 static const char *TAG = "app_main";
 
-#define BUFFER_SIZE      		  (512)
+#define BUFFER_SIZE      		  (256)
 
 #define SAMPLE_RATE 44100
-#define OVERSAMPLING 1
+#define OVERSAMPLING 5
 
+// Effects active
 #undef EF_ECHO
 
-#undef OS_SIGMA_KAPPA
-#define OS_LP
+// Filtering
+#undef OS_SIGMA
+#undef OS_LP
+#define OS_MEDIAN
+
 #define LP_BETA 0.8
 
+#define DC_BETA 0.99
+#define RMS_BETA 0.999
 
 // TODO: Use DMA-buffers for filtering instead of the echo-buffer.
 
@@ -144,6 +149,15 @@ int i2s_init_1()
      return ESP_OK;
 }
 
+#ifdef OS_MEDIAN
+static int cmp_samples(sample_t *p1, sample_t *p2)
+{
+	if (*p1 > *p2) return 1;
+	else if (*p1 < *p2) return -1;
+	else return 0;
+}
+#endif
+
 /**
  * @brief Main loop
  */
@@ -151,6 +165,7 @@ void i2s_dac_task(void*arg)
 {
 	size_t bytes_written = 0;
 	size_t bytes_read = 0;
+    esp_err_t rc;
 
 	sample_t *i2s_buffer = calloc(BUFFER_SIZE * OVERSAMPLING, sizeof(sample_t));
     if (i2s_buffer == 0) {
@@ -169,35 +184,44 @@ void i2s_dac_task(void*arg)
     }
 #endif
 
-//    unsigned short i;
-    unsigned short sample_in;
-    unsigned short sample_out;
-    int32_t v, value;
-#ifdef OS_SIGMA_KAPPA
+#define GET_SAMPLE() (integral += ((*sample_in) << 4) - 32768, ((int16_t)(*sample_in++) << 4) - 32768 - dc_offset)
+
+    sample_t *sample_in;
+    sample_t *sample_out;
+    int32_t value;
+#if defined(OS_SIGMA) || defined(OS_LP)
+    int32_t v;
+#endif
+#ifdef OS_SIGMA
     int32_t high, low;
 #endif
+#ifdef OS_MEDIAN
+    int32_t oversample_buffer[OVERSAMPLING];
+#endif
     unsigned short osample;
-    uint64_t ms = 0; // Signal level measured over each buffer
+    uint64_t ms = 0; // Signal level measured over each cycle
+    int32_t dc_offset = -3030;
+    int64_t integral = 0;
     int intervall = 0;
 
 	while (1)
     {
     	for(intervall = 0; intervall < 200; intervall++)
     	{
-    		if (i2s_read(I2S_NUM_0, i2s_buffer, BUFFER_SIZE * OVERSAMPLING * sizeof(sample_t), &bytes_read, portMAX_DELAY) != ESP_OK) {
-				ESP_LOGE(TAG, "failed to read data");
-			}
+    		rc = i2s_read(I2S_NUM_0, i2s_buffer, BUFFER_SIZE * OVERSAMPLING * sizeof(sample_t), &bytes_read, portMAX_DELAY);
+    		ASSERT(rc == ESP_OK, "failed to read data");
+    		ASSERT(bytes_read == BUFFER_SIZE * OVERSAMPLING * 2, "wrong data size read");
 
-    		sample_out = 0;
-
-    		for(sample_in = 0; sample_in < BUFFER_SIZE * OVERSAMPLING; sample_in += OVERSAMPLING)
+    		integral = 0;
+    		for(sample_out = sample_in = i2s_buffer; sample_in < (i2s_buffer + BUFFER_SIZE * OVERSAMPLING); /* No increment */)
     		{
-#ifdef OS_SIGMA_KAPPA
+
+#ifdef OS_SIGMA
     			value = 0;
     			high = 0;
     			low = 32768;
        			for(osample = 0; osample < OVERSAMPLING; osample++) {
-        				v = ADC_TO_SIGNED(i2s_buffer[sample_in + osample]);
+        				v = GET_SAMPLE();
         				if (v > high) high = v;
         				if (v < low) low = v;
         				value += v;
@@ -212,12 +236,20 @@ void i2s_dac_task(void*arg)
 #endif
 
 #ifdef OS_LP
-    			value = ADC_TO_SIGNED(i2s_buffer[sample_in]);
+    			value = GET_SAMPLE();
     			for(osample = 1; osample < OVERSAMPLING; osample++) {
-    				v = ADC_TO_SIGNED(i2s_buffer[sample_in + osample]);
-
-    				value = value * LP_BETA + v * (1.0-LP_BETA);
+    				v = GET_SAMPLE();
+//    				value = value * LP_BETA + v * (1.0-LP_BETA);
+    				value = value / 2 + v / 2;
     			}
+#endif
+
+#ifdef OS_MEDIAN
+    			for(osample = 0; osample < OVERSAMPLING; osample++) {
+    				oversample_buffer[osample] = GET_SAMPLE();
+    			}
+    			qsort(oversample_buffer, OVERSAMPLING, sizeof(oversample_buffer[0]), cmp_samples);
+    			value = (oversample_buffer[OVERSAMPLING / 2] + oversample_buffer[OVERSAMPLING / 2 + 1]) / 2;
 #endif
 
 #ifdef EF_ECHO
@@ -240,16 +272,18 @@ void i2s_dac_task(void*arg)
     				value = -32768;
     			}
 //value = 0;
-    			ms = ms * 0.999 + value * value * 0.001;
-
-    			i2s_buffer[sample_out++] = value; // Note I2S uses two-complement signed data.
+    			ms = ms * RMS_BETA + value * value * (1.0 - RMS_BETA);
+    			*sample_out++ = value; // Note I2S uses two-complement signed data.
     		}
 
-			if (i2s_write(I2S_NUM_1, i2s_buffer, sample_out * sizeof(sample_t), &bytes_written, portMAX_DELAY) != ESP_OK) {
-				ESP_LOGE(TAG, "failed to read data");
-			}
+    		ASSERT((sample_out - i2s_buffer) >= (BUFFER_SIZE), "no enough data written");
+    		ASSERT((sample_out - i2s_buffer) <= (BUFFER_SIZE), "too much data written");
+			rc = i2s_write(I2S_NUM_1, i2s_buffer, (sample_out - i2s_buffer) * sizeof(sample_t), &bytes_written, portMAX_DELAY);
+			ASSERT(rc == ESP_OK, "failed to read data");
+
+			dc_offset = dc_offset * DC_BETA + (integral / (BUFFER_SIZE * OVERSAMPLING)) * (1.0 - DC_BETA);
     	}
-    	ESP_LOGI(TAG, "Signal rms = %f", sqrt(ms));
+    	ESP_LOGI(TAG, "Signal rms = %f (dc-offset %d)", sqrt(ms), dc_offset);
     }
 
     free(i2s_buffer);
