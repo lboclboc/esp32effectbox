@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_spi_flash.h"
@@ -19,11 +20,22 @@
 typedef int16_t sample_t;
 #include "audio_example_file.h"
 
+// Scale up from 12->16 bit and make signed.
+#define ADC_TO_SIGNED(x) (((x) << 4) - 32768)
+
 static const char *TAG = "app_main";
 
 #define BUFFER_SIZE      		  (512)
 
 #define SAMPLE_RATE 44100
+#define OVERSAMPLING 1
+
+#undef EF_ECHO
+
+#undef OS_SIGMA_KAPPA
+#define OS_LP
+#define LP_BETA 0.8
+
 
 // TODO: Use DMA-buffers for filtering instead of the echo-buffer.
 
@@ -47,12 +59,12 @@ int i2s_init_0(void)
 	 // I2S0 ADC Input
      i2s_config_t i2s0_config = {
         .mode = I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN,
-        .sample_rate =  SAMPLE_RATE,
+        .sample_rate =  SAMPLE_RATE * OVERSAMPLING,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 2,
+        .dma_buf_count = 3,
         .dma_buf_len = BUFFER_SIZE,
 	    .tx_desc_auto_clear = false,
         .use_apll = false,
@@ -105,7 +117,7 @@ int i2s_init_1()
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
 		// Using I2S_CHANNEL_FMT_RIGHT_LEFT does not fix 1bit problem
         .intr_alloc_flags = 0,
-        .dma_buf_count = 2,
+        .dma_buf_count = 3,
         .dma_buf_len = BUFFER_SIZE,
         .use_apll = true,
 		.fixed_mclk = 0,
@@ -140,37 +152,75 @@ void i2s_dac_task(void*arg)
 	size_t bytes_written = 0;
 	size_t bytes_read = 0;
 
-	sample_t *i2s_buffer = calloc(BUFFER_SIZE, sizeof(sample_t));
+	sample_t *i2s_buffer = calloc(BUFFER_SIZE * OVERSAMPLING, sizeof(sample_t));
     if (i2s_buffer == 0) {
         ESP_LOGE(TAG, "Failed to allocate buffer memory");
         return;
     }
 
+#ifdef EF_ECHO
+    unsigned short echo_pos = 0;
     int echo_size = 1<<13;
     int echo_mask = echo_size - 1;
-    sample_t *echo_buffer = calloc(echo_size, sizeof (sample_t));
+    sample_t *echo_buffer = calloc(echo_size, sizeof (int32_t));
     if (echo_buffer == 0) {
         ESP_LOGE(TAG, "Failed to allocate echo memory");
          return;
     }
+#endif
 
 //    unsigned short i;
-    unsigned short echo_pos = 0;
-    unsigned short sample;
-    int32_t value;
-
+    unsigned short sample_in;
+    unsigned short sample_out;
+    int32_t v, value;
+#ifdef OS_SIGMA_KAPPA
+    int32_t high, low;
+#endif
+    unsigned short osample;
+    uint64_t ms = 0; // Signal level measured over each buffer
+    int intervall = 0;
 
 	while (1)
     {
-    	//for(i = 0; i < 2000; i++) {
-    		if (i2s_read(I2S_NUM_0, i2s_buffer, BUFFER_SIZE * sizeof(sample_t), &bytes_read, portMAX_DELAY) != ESP_OK) {
+    	for(intervall = 0; intervall < 200; intervall++)
+    	{
+    		if (i2s_read(I2S_NUM_0, i2s_buffer, BUFFER_SIZE * OVERSAMPLING * sizeof(sample_t), &bytes_read, portMAX_DELAY) != ESP_OK) {
 				ESP_LOGE(TAG, "failed to read data");
 			}
 
-    		for(sample = 0; sample < BUFFER_SIZE; sample++)
+    		sample_out = 0;
+
+    		for(sample_in = 0; sample_in < BUFFER_SIZE * OVERSAMPLING; sample_in += OVERSAMPLING)
     		{
-    			value = (i2s_buffer[sample] << 4) - 32768; // Scale up from 12->16 bit and make signed.
-#if 1
+#ifdef OS_SIGMA_KAPPA
+    			value = 0;
+    			high = 0;
+    			low = 32768;
+       			for(osample = 0; osample < OVERSAMPLING; osample++) {
+        				v = ADC_TO_SIGNED(i2s_buffer[sample_in + osample]);
+        				if (v > high) high = v;
+        				if (v < low) low = v;
+        				value += v;
+       			}
+    			if (OVERSAMPLING >= 3) {
+    				value -= high + low;
+    				value /= OVERSAMPLING - 2;
+    			}
+    			else {
+    				value /= OVERSAMPLING;
+    			}
+#endif
+
+#ifdef OS_LP
+    			value = ADC_TO_SIGNED(i2s_buffer[sample_in]);
+    			for(osample = 1; osample < OVERSAMPLING; osample++) {
+    				v = ADC_TO_SIGNED(i2s_buffer[sample_in + osample]);
+
+    				value = value * LP_BETA + v * (1.0-LP_BETA);
+    			}
+#endif
+
+#ifdef EF_ECHO
     			// Echo
     			value += echo_buffer[echo_pos] * 0.4;
 
@@ -179,24 +229,27 @@ void i2s_dac_task(void*arg)
     					  +echo_buffer[(echo_pos - 25) & echo_mask] * 0.0
 						  ;
 
+    			echo_buffer[echo_pos] = value;
+    			echo_pos = (echo_pos + 1) & echo_mask;
+#endif
+
     			if (value > 32767) {
     				value = 32767;
     			}
     			else if (value < -32768) {
     				value = -32768;
     			}
+//value = 0;
+    			ms = ms * 0.999 + value * value * 0.001;
 
-    			echo_buffer[echo_pos] = value;
-    			echo_pos = (echo_pos + 1) & echo_mask;
-#endif
-
-    			i2s_buffer[sample] = value; // Note I2S uses two-complement signed data.
+    			i2s_buffer[sample_out++] = value; // Note I2S uses two-complement signed data.
     		}
 
-			if (i2s_write(I2S_NUM_1, i2s_buffer, bytes_read, &bytes_written, portMAX_DELAY) != ESP_OK) {
+			if (i2s_write(I2S_NUM_1, i2s_buffer, sample_out * sizeof(sample_t), &bytes_written, portMAX_DELAY) != ESP_OK) {
 				ESP_LOGE(TAG, "failed to read data");
 			}
-    	//}
+    	}
+    	ESP_LOGI(TAG, "Signal rms = %f", sqrt(ms));
     }
 
     free(i2s_buffer);
