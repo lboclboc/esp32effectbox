@@ -30,7 +30,9 @@ static const char *TAG = "app_main";
 #define OVERSAMPLING 5
 
 // Effects active
-#undef EF_ECHO
+#define EF_ECHO
+#define ECHO_LENGTH 1<<14
+#define ECHO_DECAY 0.4
 
 // Filtering
 #undef OS_SIGMA
@@ -175,9 +177,9 @@ void i2s_dac_task(void*arg)
 
 #ifdef EF_ECHO
     unsigned short echo_pos = 0;
-    int echo_size = 1<<13;
+    int echo_size = ECHO_LENGTH;
     int echo_mask = echo_size - 1;
-    sample_t *echo_buffer = calloc(echo_size, sizeof (int32_t));
+    int32_t *echo_buffer = calloc(echo_size, sizeof (int32_t));
     if (echo_buffer == 0) {
         ESP_LOGE(TAG, "Failed to allocate echo memory");
          return;
@@ -254,7 +256,7 @@ void i2s_dac_task(void*arg)
 
 #ifdef EF_ECHO
     			// Echo
-    			value += echo_buffer[echo_pos] * 0.4;
+    			value += echo_buffer[echo_pos] * ECHO_DECAY;
 
     			// IIR-filtering.
      			value +=  -echo_buffer[(echo_pos - 10) & echo_mask] * 0.0
