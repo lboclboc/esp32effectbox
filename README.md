@@ -1,5 +1,5 @@
 # ESP32EffectBox
-This is a simple guitar box effect box built upon the ESP32 using its internal 12bit ADC and sending audio out through I2S.
+This is a simple guitar effect box built upon the ESP32 using its internal 12bit ADC and sending audio out through I2S.
 The pins used for I2S is BCLK = GPIO26, WS = GPIO25 and DATA = GPIO27.
 
 The analog input, if connecting from a passive instrument, will require some pre-amplifier with a gain about 20dB. The input also needs a rather sharp a low pass filter for frequencies above 20KHz - depending of oversampling used.
