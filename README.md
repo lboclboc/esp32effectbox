@@ -25,3 +25,7 @@ Build the project and flash it to the board, then run monitor tool to view seria
 
 ### Configure SDK
 cd build; cmake --build . -t menuconfig
+
+## TODO
+- Possibly use DMA-buffers for filtering instead of the echo-buffer.
+

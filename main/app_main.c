@@ -37,14 +37,13 @@ static const char *TAG = "app_main";
 #define MIX(v1, v2, beta) ( ((v1) * beta + (FIXED_DECIMAL_ONE - beta) * (v2)) / FIXED_DECIMAL_ONE)
 
 // Filtering
-#undef OS_SIGMA
 #undef OS_LP
 #define OS_MEDIAN
 
-#define LP_BETA FIXED_DECIMAL(0.99)
+#define LP_BETA FIXED_DECIMAL(0.2)
 
-#define DC_BETA  FIXED_DECIMAL(0.99)
-#define RMS_BETA  FIXED_DECIMAL(0.99)
+#define DC_BETA FIXED_DECIMAL(0.99)
+#define RMS_BETA FIXED_DECIMAL(0.99)
 #define HISTORY_LENGTH (1<<14)
 #define HISTORY_MASK (HISTORY_LENGTH - 1)
 
@@ -62,15 +61,13 @@ static const char *TAG = "app_main";
 // Flanger
 #define EF_FLANGER // Requires EF_ECHO
 #define FLANGER_LENGTH 1000
+#if FLANGER_LENGTH >= HISTORY_LENGTH
+#error "To large flanger length"
+#endif
 #define FLANGER_DRY FIXED_DECIMAL(0.9)
 
-
-// TODO: Use DMA-buffers for filtering instead of the echo-buffer.
-
-#if 0
-static void dump_registers();
-static void tweak_registers();
-#endif
+extern void tweak_registers();
+extern void dump_registers(int i2s_num);
 
 int i2s_init_0(void)
 {
@@ -104,14 +101,6 @@ int i2s_init_0(void)
          ESP_LOGE(TAG, "Failed calling i2s_driver_install");
          return rc;
      }
-
-#if 0 // This causes the is2_1 pin outputs to disapear.
-     if ((rc = i2s_set_pin(I2S_NUM_0, NULL)) != ESP_OK) {
-         ESP_LOGE(TAG, "Failed calling i2s_set_pin");
-         return rc;
-     }
-#endif
-
 
      if ((rc = i2s_set_adc_mode(ADC_UNIT_1, ADC1_CHANNEL_0)) != ESP_OK) {
      	 ESP_LOGE(TAG, "Failed calling i2s_set_adc_mode");
@@ -208,17 +197,17 @@ void i2s_dac_task(void*arg)
     sample_t *sample_in;
     sample_t *sample_out;
     value_t value = 0;
-#if defined(OS_SIGMA) || defined(OS_LP) || defined(EF_FLANGER)
+
+#if defined(OS_LP) || defined(EF_FLANGER)
     value_t v;
 #endif
-
-#ifdef OS_SIGMA
-    value_t high, low;
+#if defined(OS_LP)
+    value_t lp_value = 0;
 #endif
-
 #ifdef OS_MEDIAN
     value_t oversample_buffer[OVERSAMPLING];
 #endif
+
     unsigned short osample;
     uint64_t ms = 0; // Signal level measured over each cycle
     value_t dc_offset = -3030;
@@ -236,31 +225,13 @@ void i2s_dac_task(void*arg)
     		integral = 0;
     		for(sample_out = sample_in = i2s_buffer; sample_in < (i2s_buffer + BUFFER_SIZE * OVERSAMPLING); /* No increment */)
     		{
-    			// - Filtration/oversampling -
-#ifdef OS_SIGMA
-    			value = 0;
-    			high = 0;
-    			low = 32768;
-       			for(osample = 0; osample < OVERSAMPLING; osample++) {
-        				v = GET_SAMPLE();
-        				if (v > high) high = v;
-        				if (v < low) low = v;
-        				value += v;
-       			}
-    			if (OVERSAMPLING >= 3) {
-    				value -= high + low;
-    				value /= OVERSAMPLING - 2;
-    			}
-    			else {
-    				value /= OVERSAMPLING;
-    			}
-#endif
-
+    			// - Filtering/oversampling -> value -
 #ifdef OS_LP
     			for(osample = 0; osample < OVERSAMPLING; osample++) {
     				v = GET_SAMPLE();
-    				value = (value * LP_BETA + (FIXED_DECIMAL_ONE - LP_BETA) * v) / FIXED_DECIMAL_ONE;
+    				lp_value = MIX(lp_value, v, LP_BETA);
     			}
+    			value = lp_value;
 #endif
 
 #ifdef OS_MEDIAN
@@ -325,12 +296,16 @@ esp_err_t app_main(void)
     	return rc;
     }
 
+    ESP_LOGI(TAG, "I2S0 settings:");
+    dump_registers(0);
+    ESP_LOGI(TAG, "I2S1 settings:");
+	dump_registers(1);
+
     xTaskCreate(i2s_dac_task, "i2s_adc_dac", 1024 * 2, NULL, 5, NULL);
 
     return ESP_OK;
 }
 
-#if 0
 
 void tweak_registers()
 {
@@ -413,4 +388,3 @@ void dump_registers(int i2s_num)
 
     ESP_LOGI(TAG, "APB_CTRL_SARADC_DATA_TO_I2S = %d", REG_GET_FIELD(APB_CTRL_APB_SARADC_CTRL_REG, APB_CTRL_SARADC_DATA_TO_I2S));
 }
-#endif
