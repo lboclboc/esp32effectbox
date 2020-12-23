@@ -18,6 +18,7 @@
 #include "soc/dac_periph.h"
 #include "soc/syscon_periph.h"
 
+typedef int32_t value_t; // Value type used for functions and history buffer.
 typedef uint16_t sample_t;
 #include "audio_example_file.h"
 
@@ -29,20 +30,40 @@ static const char *TAG = "app_main";
 #define SAMPLE_RATE 44100
 #define OVERSAMPLING 5
 
-// Effects active
-#define EF_ECHO
-#define ECHO_LENGTH 1<<14
-#define ECHO_DECAY 0.4
+#define FIXED_DECIMAL_ONE 1000  // Used for all betas and other fractions below
+#define FIXED_DECIMAL(x) ( (int)((x) *  FIXED_DECIMAL_ONE) )
+
+// Beta of FIXED_DECIMAL(1.0) returns only v1, rest is mix
+#define MIX(v1, v2, beta) ( ((v1) * beta + (FIXED_DECIMAL_ONE - beta) * (v2)) / FIXED_DECIMAL_ONE)
 
 // Filtering
 #undef OS_SIGMA
 #undef OS_LP
 #define OS_MEDIAN
 
-#define LP_BETA 0.8
+#define LP_BETA FIXED_DECIMAL(0.99)
 
-#define DC_BETA 0.99
-#define RMS_BETA 0.999
+#define DC_BETA  FIXED_DECIMAL(0.99)
+#define RMS_BETA  FIXED_DECIMAL(0.99)
+#define HISTORY_LENGTH (1<<14)
+#define HISTORY_MASK (HISTORY_LENGTH - 1)
+
+// Effects
+
+// Echo
+#define EF_ECHO
+#define ECHO_LENGTH 10000
+#define ECHO_FEEDBACK  FIXED_DECIMAL(0.5)
+#define ECHO_DRY FIXED_DECIMAL(0.7)
+#if ECHO_LENGTH >= HISTORY_LENGTH
+#error "To large echo size"
+#endif
+
+// Flanger
+#define EF_FLANGER // Requires EF_ECHO
+#define FLANGER_LENGTH 1000
+#define FLANGER_DRY FIXED_DECIMAL(0.9)
+
 
 // TODO: Use DMA-buffers for filtering instead of the echo-buffer.
 
@@ -152,10 +173,10 @@ int i2s_init_1()
 }
 
 #ifdef OS_MEDIAN
-static int cmp_samples(sample_t *p1, sample_t *p2)
+static int cmp_samples(const void *p1, const void *p2)
 {
-	if (*p1 > *p2) return 1;
-	else if (*p1 < *p2) return -1;
+	if (*(sample_t *)p1 > *(sample_t *)p2) return 1;
+	else if (*(sample_t *)p1 < *(sample_t *)p2) return -1;
 	else return 0;
 }
 #endif
@@ -175,34 +196,32 @@ void i2s_dac_task(void*arg)
         return;
     }
 
-#ifdef EF_ECHO
-    unsigned short echo_pos = 0;
-    int echo_size = ECHO_LENGTH;
-    int echo_mask = echo_size - 1;
-    int32_t *echo_buffer = calloc(echo_size, sizeof (int32_t));
-    if (echo_buffer == 0) {
+    unsigned short history_pos = 0;
+    value_t *history = calloc(HISTORY_LENGTH, sizeof (value_t));
+    if (history == 0) {
         ESP_LOGE(TAG, "Failed to allocate echo memory");
          return;
     }
-#endif
 
-#define GET_SAMPLE() (integral += ((*sample_in) << 4) - 32768, ((int16_t)(*sample_in++) << 4) - 32768 - dc_offset)
+#define GET_SAMPLE() (integral += ((*sample_in) << 4) + INT16_MIN, ((int16_t)(*sample_in++) << 4) + INT16_MIN - dc_offset)
 
     sample_t *sample_in;
     sample_t *sample_out;
-    int32_t value;
-#if defined(OS_SIGMA) || defined(OS_LP)
-    int32_t v;
+    value_t value = 0;
+#if defined(OS_SIGMA) || defined(OS_LP) || defined(EF_FLANGER)
+    value_t v;
 #endif
+
 #ifdef OS_SIGMA
-    int32_t high, low;
+    value_t high, low;
 #endif
+
 #ifdef OS_MEDIAN
-    int32_t oversample_buffer[OVERSAMPLING];
+    value_t oversample_buffer[OVERSAMPLING];
 #endif
     unsigned short osample;
     uint64_t ms = 0; // Signal level measured over each cycle
-    int32_t dc_offset = -3030;
+    value_t dc_offset = -3030;
     int64_t integral = 0;
     int intervall = 0;
 
@@ -217,7 +236,7 @@ void i2s_dac_task(void*arg)
     		integral = 0;
     		for(sample_out = sample_in = i2s_buffer; sample_in < (i2s_buffer + BUFFER_SIZE * OVERSAMPLING); /* No increment */)
     		{
-
+    			// - Filtration/oversampling -
 #ifdef OS_SIGMA
     			value = 0;
     			high = 0;
@@ -238,11 +257,9 @@ void i2s_dac_task(void*arg)
 #endif
 
 #ifdef OS_LP
-    			value = GET_SAMPLE();
-    			for(osample = 1; osample < OVERSAMPLING; osample++) {
+    			for(osample = 0; osample < OVERSAMPLING; osample++) {
     				v = GET_SAMPLE();
-//    				value = value * LP_BETA + v * (1.0-LP_BETA);
-    				value = value / 2 + v / 2;
+    				value = (value * LP_BETA + (FIXED_DECIMAL_ONE - LP_BETA) * v) / FIXED_DECIMAL_ONE;
     			}
 #endif
 
@@ -250,31 +267,36 @@ void i2s_dac_task(void*arg)
     			for(osample = 0; osample < OVERSAMPLING; osample++) {
     				oversample_buffer[osample] = GET_SAMPLE();
     			}
-    			qsort(oversample_buffer, OVERSAMPLING, sizeof(oversample_buffer[0]), cmp_samples);
+    			qsort((void *)oversample_buffer, OVERSAMPLING, sizeof(oversample_buffer[0]), cmp_samples);
     			value = (oversample_buffer[OVERSAMPLING / 2] + oversample_buffer[OVERSAMPLING / 2 + 1]) / 2;
 #endif
 
+    			// - History and RMS meassurement -
+    			ms = MIX(ms, value*value, RMS_BETA);
+
+    			history_pos = (history_pos + 1) & HISTORY_MASK;
+    			history[history_pos] = value;
+
+    			// - Effects -
 #ifdef EF_ECHO
-    			// Echo
-    			value += echo_buffer[echo_pos] * ECHO_DECAY;
-
-    			// IIR-filtering.
-     			value +=  -echo_buffer[(echo_pos - 10) & echo_mask] * 0.0
-    					  +echo_buffer[(echo_pos - 25) & echo_mask] * 0.0
-						  ;
-
-    			echo_buffer[echo_pos] = value;
-    			echo_pos = (echo_pos + 1) & echo_mask;
+    			v = history[(history_pos - ECHO_LENGTH) & HISTORY_MASK];
+    			history[history_pos] += MIX(v, 0, ECHO_FEEDBACK);
+    			value =  MIX(value, v, ECHO_DRY);
 #endif
 
-    			if (value > 32767) {
-    				value = 32767;
+#ifdef EF_FLANGER
+    			v = value * history[(history_pos - FLANGER_LENGTH) & HISTORY_MASK] / 65536;
+    			value = MIX(value, v, FLANGER_DRY);
+#endif
+
+    			if (value > INT16_MAX) {
+    				value = INT16_MAX;
     			}
-    			else if (value < -32768) {
-    				value = -32768;
+    			else if (value < INT16_MIN) {
+    				value = INT16_MIN;
     			}
 //value = 0;
-    			ms = ms * RMS_BETA + value * value * (1.0 - RMS_BETA);
+
     			*sample_out++ = value; // Note I2S uses two-complement signed data.
     		}
 
@@ -283,7 +305,7 @@ void i2s_dac_task(void*arg)
 			rc = i2s_write(I2S_NUM_1, i2s_buffer, (sample_out - i2s_buffer) * sizeof(sample_t), &bytes_written, portMAX_DELAY);
 			ASSERT(rc == ESP_OK, "failed to read data");
 
-			dc_offset = dc_offset * DC_BETA + (integral / (BUFFER_SIZE * OVERSAMPLING)) * (1.0 - DC_BETA);
+			dc_offset = (dc_offset * DC_BETA + (integral / (BUFFER_SIZE * OVERSAMPLING)) * (FIXED_DECIMAL_ONE - DC_BETA)) / FIXED_DECIMAL_ONE;
     	}
     	ESP_LOGI(TAG, "Signal rms = %f (dc-offset %d)", sqrt(ms), dc_offset);
     }
