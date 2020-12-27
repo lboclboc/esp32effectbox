@@ -300,7 +300,7 @@ esp_err_t app_main(void)
 
     dump_registers();
 
-    xTaskCreate(i2s_dac_task, "i2s_adc_dac", 1024 * 2, NULL, 5, NULL);
+    xTaskCreate(i2s_dac_task, "i2s_adc_dac", 1024 * 2, NULL, 50, NULL);
 
     return ESP_OK;
 }

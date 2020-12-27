@@ -26,6 +26,14 @@ Build the project and flash it to the board, then run monitor tool to view seria
 ### Configure SDK
 cd build; cmake --build . -t menuconfig
 
+### Build problems in eclipse?
+
+The espressif build plugin for eclipse is sadly not quite the most stable thing - sometimes it gets really messed up. This can solve it:
+- Rename/remove ~/.espressif
+- Go in to windows->preferences->C++->build->environment and delete all variables.
+- Remove the build-directories below both esp-idf and esp32effectbox
+- Rerun Help->ESP-IDF Tools Manager -> Install Tools, to be safe use python3 for python command.
+
 ## TODO
 - Possibly use DMA-buffers for filtering instead of the echo-buffer.
 
