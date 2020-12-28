@@ -28,11 +28,16 @@ cd build; cmake --build . -t menuconfig
 
 ### Build problems in eclipse?
 
-The espressif build plugin for eclipse is sadly not quite the most stable thing - sometimes it gets really messed up. This can solve it:
-- Rename/remove ~/.espressif
+Make sure the target is named esp32, in addition to IDF target. Seems the plugin erronously uses the name and not the IDF target.
+
+The espressif build plugin for eclipse is sadly not quite the most stable thing - sometimes it gets really messed up.
+This might solve it:
+- Rename/remove ~/.espressif/python_env and ~/.espressif/tools/
 - Go in to windows->preferences->C++->build->environment and delete all variables.
 - Remove the build-directories below both esp-idf and esp32effectbox
 - Rerun Help->ESP-IDF Tools Manager -> Install Tools, to be safe use python3 for python command.
+
+One can also run manual builds: cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=..../esp-idf/tools/cmake/toolchain-esp32.cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -S ...../esp32effectbox
 
 ## TODO
 - Possibly use DMA-buffers for filtering instead of the echo-buffer.

@@ -3,7 +3,6 @@
 	<name>esp32effectbox</name>
 	<comment></comment>
 	<projects>
-		<project>esp-idf</project>
 	</projects>
 	<buildSpec>
 		<buildCommand>
@@ -22,6 +21,5 @@
 		<nature>org.eclipse.cdt.core.cnature</nature>
 		<nature>org.eclipse.cdt.core.ccnature</nature>
 		<nature>com.espressif.idf.core.idfNature</nature>
-		<nature>org.python.pydev.pythonNature</nature>
 	</natures>
 </projectDescription>
